@@ -1,0 +1,15 @@
+name: astrbot_plugin_forward_context_layers
+display_name: 多层引用转发上下文注入
+desc: 在 LLM 请求前展开 reply/forward 多层内容并注入上下文，修复“只看到外层引用”问题
+help: |
+  使用方法：
+  /fctx - 查看当前插件配置摘要
+
+  配置项（管理面板）：
+  - max_reply_layers: 最多解析 reply 层数
+  - max_forward_layers: 最多解析 forward 层数
+  - max_chars_per_layer: 每层最大字符数
+  - max_total_chars: 总注入上限
+version: v1.0.0
+author: constansino
+repo: https://github.com/constansino/astrbot_plugin_forward_context_layers

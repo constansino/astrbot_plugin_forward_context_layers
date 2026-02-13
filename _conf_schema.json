@@ -1,0 +1,67 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "type": "bool",
+    "default": true
+  },
+  "only_when_replied": {
+    "description": "仅在消息包含引用/转发时注入",
+    "type": "bool",
+    "default": true
+  },
+  "max_reply_layers": {
+    "description": "最大 reply 解析层数",
+    "type": "int",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 12,
+      "step": 1
+    }
+  },
+  "max_forward_layers": {
+    "description": "最大 forward 解析层数",
+    "type": "int",
+    "default": 5,
+    "slider": {
+      "min": 0,
+      "max": 12,
+      "step": 1
+    }
+  },
+  "max_chars_per_layer": {
+    "description": "每层文本最大字符数",
+    "type": "int",
+    "default": 900,
+    "slider": {
+      "min": 100,
+      "max": 3000,
+      "step": 50
+    }
+  },
+  "max_total_chars": {
+    "description": "总注入文本上限",
+    "type": "int",
+    "default": 5000,
+    "slider": {
+      "min": 500,
+      "max": 12000,
+      "step": 100
+    }
+  },
+  "include_sender": {
+    "description": "注入时包含发送者",
+    "type": "bool",
+    "default": true
+  },
+  "include_non_text_tokens": {
+    "description": "包含图片/表情等占位符",
+    "type": "bool",
+    "default": true
+  },
+  "include_current_outline": {
+    "description": "包含当前消息的概要层",
+    "type": "bool",
+    "default": true
+  }
+}
