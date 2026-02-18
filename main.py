@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,11 +38,11 @@ class ForwardContextLayersPlugin(Star):
 
     @property
     def max_reply_layers(self) -> int:
-        return max(0, int(self.config.get("max_reply_layers", 5)))
+        return max(0, int(self.config.get("max_reply_layers", 10)))
 
     @property
     def max_forward_layers(self) -> int:
-        return max(0, int(self.config.get("max_forward_layers", 5)))
+        return max(0, int(self.config.get("max_forward_layers", 10)))
 
     @property
     def max_chars_per_layer(self) -> int:
@@ -104,6 +105,7 @@ class ForwardContextLayersPlugin(Star):
             return
 
         try:
+            self._log_views_preview(views)
             req.system_prompt = f"{(req.system_prompt or '').rstrip()}\n\n{injected}"
             logger.info(
                 "[fctx] injected layered context: views=%s, chars=%s",
@@ -314,6 +316,10 @@ class ForwardContextLayersPlugin(Star):
             return [x for x in raw if isinstance(x, dict)]
 
         if isinstance(raw, str) and raw.strip():
+            if "[CQ:" in raw:
+                parsed = self._parse_cq_chain(raw)
+                if parsed:
+                    return parsed
             try:
                 parsed = json.loads(raw)
                 if isinstance(parsed, list):
@@ -429,10 +435,15 @@ class ForwardContextLayersPlugin(Star):
         data = self._ob_data(payload)
         message = data.get("message")
 
+        if isinstance(message, str) and message.strip():
+            text = self._strip_cq_tags(message)
+            return text, self._extract_forward_ids_from_cq_text(message)
+
         if not isinstance(message, list):
             raw_message = data.get("raw_message")
             if isinstance(raw_message, str) and raw_message.strip():
-                return raw_message.strip(), []
+                text = self._strip_cq_tags(raw_message)
+                return text, self._extract_forward_ids_from_cq_text(raw_message)
             return "", []
 
         text = self._onebot_chain_to_text(message)
@@ -442,7 +453,17 @@ class ForwardContextLayersPlugin(Star):
     def _extract_reply_id_from_payload(self, payload: dict[str, Any]) -> str:
         data = self._ob_data(payload)
         message = data.get("message")
+        if isinstance(message, str) and message.strip():
+            rid = self._extract_reply_id_from_cq_text(message)
+            if rid:
+                return rid
+
         if not isinstance(message, list):
+            raw_message = data.get("raw_message")
+            if isinstance(raw_message, str) and raw_message.strip():
+                rid = self._extract_reply_id_from_cq_text(raw_message)
+                if rid:
+                    return rid
             return ""
 
         for seg in message:
@@ -490,6 +511,77 @@ class ForwardContextLayersPlugin(Star):
             return payload
         return {}
 
+    def _extract_reply_id_from_cq_text(self, raw: str) -> str:
+        if not raw:
+            return ""
+        for cq_type, params in re.findall(r"\[CQ:([^,\]]+)(?:,([^\]]*))?\]", raw):
+            if cq_type.lower() != "reply":
+                continue
+            fields = self._parse_cq_params(params or "")
+            rid = fields.get("id") or fields.get("message_id")
+            if rid:
+                return str(rid)
+        return ""
+
+    def _extract_forward_ids_from_cq_text(self, raw: str) -> list[str]:
+        if not raw:
+            return []
+        ids: list[str] = []
+        for cq_type, params in re.findall(r"\[CQ:([^,\]]+)(?:,([^\]]*))?\]", raw):
+            cqt = cq_type.lower()
+            if cqt not in ("forward", "forward_msg", "node", "nodes"):
+                continue
+            fields = self._parse_cq_params(params or "")
+            fid = fields.get("id") or fields.get("message_id") or fields.get("forward_id")
+            if fid:
+                ids.append(str(fid))
+        return ids
+
+    def _strip_cq_tags(self, raw: str) -> str:
+        if not raw:
+            return ""
+        text = re.sub(r"\[CQ:[^\]]+\]", " ", raw)
+        return " ".join(text.split()).strip()
+
+    def _parse_cq_params(self, params: str) -> dict[str, str]:
+        parsed: dict[str, str] = {}
+        if not params:
+            return parsed
+        for part in params.split(","):
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            key = k.strip()
+            if not key:
+                continue
+            parsed[key] = v.strip()
+        return parsed
+
+    def _parse_cq_chain(self, raw: str) -> list[dict[str, Any]]:
+        chain: list[dict[str, Any]] = []
+        if not raw:
+            return chain
+
+        pos = 0
+        for m in re.finditer(r"\[CQ:([^,\]]+)(?:,([^\]]*))?\]", raw):
+            start, end = m.span()
+            if start > pos:
+                plain = raw[pos:start].strip()
+                if plain:
+                    chain.append({"type": "text", "data": {"text": plain}})
+
+            cq_type = (m.group(1) or "").strip().lower()
+            params = self._parse_cq_params((m.group(2) or "").strip())
+            chain.append({"type": cq_type, "data": params})
+            pos = end
+
+        if pos < len(raw):
+            tail = raw[pos:].strip()
+            if tail:
+                chain.append({"type": "text", "data": {"text": tail}})
+
+        return chain
+
     def _truncate_views(self, views: list[LayerView]) -> list[LayerView]:
         deduped: list[LayerView] = []
         seen: set[str] = set()
@@ -516,7 +608,20 @@ class ForwardContextLayersPlugin(Star):
 
         return capped
 
+    def _log_views_preview(self, views: list[LayerView]) -> None:
+        lines: list[str] = []
+        for i, view in enumerate(views, start=1):
+            sender = f" | sender={view.sender}" if (self.include_sender and view.sender) else ""
+            text = (view.text or "").replace("\n", " ").strip()
+            if len(text) > 180:
+                text = text[:180] + "..."
+            lines.append(f"{i}. L{view.level}{sender}: {text}")
+        if lines:
+            logger.info("[fctx] layered views detail:\n%s", "\n".join(lines))
+
     def _format_for_prompt(self, event: AstrMessageEvent, views: list[LayerView]) -> str:
+        # 深层优先，尽量让模型先注意到链路底部的原始语义。
+        ordered_views = sorted(views, key=lambda v: v.level, reverse=True)
         lines = [
             self.MARKER,
             "[系统注入] 以下是从当前消息引用链/转发链展开得到的多层上下文（按层级排序）。",
@@ -524,7 +629,7 @@ class ForwardContextLayersPlugin(Star):
             "",
         ]
 
-        for view in views:
+        for view in ordered_views:
             sender = f" | sender={view.sender}" if (self.include_sender and view.sender) else ""
             lines.append(f"[Layer {view.level}{sender}] {view.text}")
 
